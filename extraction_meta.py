@@ -28,35 +28,60 @@ def profile_crm_dump(target_directory: str, output_dir: str = '.'):
         print(f' -> Profiling: {file_name}')
 
         try:
-            #crm exports often have encoding dissonance; fallback to utf-8 to latin1 if necessary
+           
+            #Phase 1 header sniffing 
             try:
-                df = pd.read_csv(file_path, low_memory=False, on_bad_lines='skip')
+                #read top 20 rows raw without header assumptions
+                sample_df = pd.read_csv(file_path, nrows=20, header=None, low_memory=False, on_bad_lines='skip', encoding='utf-8')
             
+            #crm exports often have encoding dissonance; fallback to utf-8 to latin1 if necessary
             except UnicodeDecodeError:
+                sample_df = pd.read_csv(file_path, nrows=20, header=None, low_memory=False, on_bad_lines='skip', encoding='latin1')
+            
+            if sample_df.empty:
+                print(f' [!] File is empty. Skipping.')
+                continue
+            
+            valid_counts = sample_df.notna().sum(axis=1)
+            header_idx = int(valid_counts.idxmax())
 
-                df = pd.read_csv(file_path, low_memory=False, on_bad_lines='skip', encoding='latin1')
+            if header_idx > 0: 
+                print(f'Preamble detected. Shifting header to row {header_idx}.')
+
+
+            #Phase 2 structural extractions 
+
+            try:
+                df = pd.read_csv(file_path, header=header_idx, low_memory=False, on_bad_lines='skip')
+            except UnicodeDecodeError:
+                df = pd.read_csv(file_path, header=header_idx, low_memory=False, on_bad_lines='skip', encoding='latin1')
 
             total_rows = len(df)
             headers = list(df.columns)
+
+            #Clean up default pd unnamed columns that might still sneak in from trailing commas
+            clean_headers = [str(col) for col in headers if not str(col).startswith('Unnamed:')]
 
             #1 Append to file level inventory
             file_inventory.append({
                 'file_name': file_name,
                 'relative_path': str(rel_path),
                 'row_count' : total_rows,
-                'column_count': len(headers),
-                'declared_headers': " | ".join(headers) #delim string for easy scanning
+                'column_count': len(clean_headers),
+                'declared_headers': " | ".join(clean_headers) #delim string for easy scanning
             })
 
             #2 Append to column level schema map
 
             for col in headers:
+
+                if str(col).startswith('Unnamed:'):
+                    continue #ignored the phantom columns in the detailed map 
+
                 null_count = df[col].isna().sum()
                 null_percentage = round((null_count / total_rows) * 100, 2) if total_rows > 0 else 100
                 cardinality = df[col].nunique()
-
-                #sniff out the most dominant data type in the colum
-                inferred_type = str(df[col].dtype)
+                inferred_type = str(df[col].dtype)  #sniff out the most dominant data type in the colum
 
                 column_schema.append({
                     'source_file': file_name,
