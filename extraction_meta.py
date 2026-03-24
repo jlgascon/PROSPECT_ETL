@@ -88,6 +88,6 @@ def profile_crm_dump(target_directory: str, output_dir: str = '.'):
 #Excecutioon block
 if __name__ == '__main__':
     #target folder
-    TARGET_FOLDER = 'data\raw\extracted\2025_2026'
+    TARGET_FOLDER = r'data\raw\extracted\2025_2026'
 
     profile_crm_dump(TARGET_FOLDER)
