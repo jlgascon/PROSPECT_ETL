@@ -1,0 +1,23 @@
+--> Some Row counts are way off (ie 28000)
+
+--> Need to hone in the check to see if we are at the header row (ie WYB data has a [STAY CONNECTED] before Submission details 
+
+--> OURF stuff has parent and student forms, but when we extract the data they split weird, perhaps because of underscores?
+
+--> SCHOOL FINDER HAS an old and a new format, old seems to pull headers correctly
+SF_Aug 2-Oct 18 (old way).csv	5. Data Collection\SchoolFinder\SF_Aug 2-Oct 18 (old way).csv1452	38	School Code: ulake08 | Unnamed: 1 | Unnamed: 2 | Unnamed: 3 | Unnamed: 4 | Unnamed: 5 | Unnamed: 6 | Unnamed: 7 | Unnamed: 8 | Unnamed: 9 | Unnamed: 10 | Unnamed: 11 | Unnamed: 12 | Unnamed: 13 | Unnamed: 14 | Unnamed: 15 | Unnamed: 16 | Unnamed: 17 | Unnamed: 18 | Unnamed: 19 | Unnamed: 20 | Unnamed: 21 | Unnamed: 22 | Unnamed: 23 | Unnamed: 24 | Unnamed: 25 | Unnamed: 26 | Unnamed: 27 | Unnamed: 28 | Unnamed: 29 | Unnamed: 30 | Unnamed: 31 | Unnamed: 32 | Unnamed: 33 | Unnamed: 34 | Unnamed: 35 | Unnamed: 36 | Unnamed: 37
+47	39	FirstName | LastName | StartMon | StartYear | Country | StudyLevel | City | Province | HighSchool | Email | DateTime | LeadMatch | LevelOfInterest | Gender | InterestedIn | Citizenship | Program1 | Program2 | Program3 | Program4 | Program5 | Program6 | Program7 | Program8 | Program9 | Program10 | PsSchool | Salutation | BirthDate | Address | Address2 | Address3 | PostCode | Phone | PhoneType | Comment | Academic Average | AI Score | AI Score Insights
+
+SF_Dec 14-20.csv	5. Data Collection\SchoolFinder\SF_Dec 14-20.csv
+
+
+--> Some of the row counts seem off, ill see if using the maxnum aware header logic fixes
+
+--> School finder seems to have an AI eval statement line to use 
+--> Some school finder docs have the header bumped down a few lines
+
+--> OURF files sometimes export as -\ and encode as function giving #NAME? error 
+
+--> Some file misplaced ie VB_jan 4-10 in Virtual Tour but is a Viewbook
+
+--> Some csvs have only a few rows of data put report row counts of 25800+ (ie WYB_Oct 12-18.csv	5. Data Collection\Where you Belong\WYB_Oct 12-18.csv	25864

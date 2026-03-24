@@ -56,6 +56,12 @@ def profile_crm_dump(target_directory: str, output_dir: str = '.'):
             except UnicodeDecodeError:
                 df = pd.read_csv(file_path, header=header_idx, low_memory=False, on_bad_lines='skip', encoding='latin1')
 
+            # --- purging empty delimiter rows ---
+            # 1 convert invisible whitespace strings into pd.Na
+            df.replace(r'^\s*$', pd.NA, regex=True, inplace=True)
+            # 2 drop rows where all columns are Na/NaN
+            df.dropna(how='all', inplace=True)
+            
             total_rows = len(df)
             headers = list(df.columns)
 
