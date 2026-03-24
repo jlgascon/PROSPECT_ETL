@@ -1,0 +1,93 @@
+import pandas as pd
+from pathlib import Path
+import os
+
+def profile_crm_dump(target_directory: str, output_dir: str = '.'):
+    '''crawls a directory for csvs and extracts file level header lists and granular column level metadata'''
+    target_path = Path(target_directory)
+
+    if not target_path.exists() or not target_path.is_dir():
+        print(f'[FATAL] Directory not found: {target_directory}')
+        return
+    
+    print(f'[*] Initatiating metadata extraction in: {target_path.resolve()}')
+
+    file_inventory = []
+    column_schema = []
+
+    #recursively hunt down the csvs files in target folder and sub directories
+
+    csv_files = list(target_path.rglob('*.csv'))
+
+    print(f'[*] Found {len(csv_files)} CSV files. Commencing evals')
+
+    for file_path in csv_files:
+        file_name = file_path.name
+        rel_path = file_path.relative_to(target_path)
+
+        print(f' -> Profiling: {file_name}')
+
+        try:
+            #crm exports often have encoding dissonance; fallback to utf-8 to latin1 if necessary
+            try:
+                df = pd.read_csv(file_path, low_memory=False, on_bad_lines='skip')
+            
+            except UnicodeDecodeError:
+
+                df = pd.read_csv(file_path, low_memory=False, on_bad_lines='skip', encoding='latin1')
+
+            total_rows = len(df)
+            headers = list(df.columns)
+
+            #1 Append to file level inventory
+            file_inventory.append({
+                'file_name': file_name,
+                'relative_path': str(rel_path),
+                'row_count' : total_rows,
+                'column_count': len(headers),
+                'declared_headers': " | ".join(headers) #delim string for easy scanning
+            })
+
+            #2 Append to column level schema map
+
+            for col in headers:
+                null_count = df[col].isna().sum()
+                null_percentage = round((null_count / total_rows) * 100, 2) if total_rows > 0 else 100
+                cardinality = df[col].nunique()
+
+                #sniff out the most dominant data type in the colum
+                inferred_type = str(df[col].dtype)
+
+                column_schema.append({
+                    'source_file': file_name,
+                    'column_name': col,
+                    'inferred_type': inferred_type,
+                    'total_rows': total_rows,
+                    'null_count': null_count,
+                    'null_percentage' : null_percentage, 
+                    'cardinality' : cardinality
+                })
+
+        except Exception as e:
+            print(f'[ERROR] Failed to process {file_name}: {str(e)}')
+
+    #construct dataframes and export
+    df_inventory = pd.DataFrame(file_inventory)
+    df_schema = pd.DataFrame(column_schema)
+
+    inventory_out = Path(output_dir) / '01_file_inventory.csv'
+    schema_out = Path(output_dir) / '02_column_schema_map.csv'
+
+    df_inventory.to_csv(inventory_out, index=False)
+    df_schema.to_csv(schema_out, index=False)
+
+    print('\n[*] Extraction Complete')
+    print(f' -> File inventory saved to: {inventory_out}')
+    print(f' -> Schema map saved to {schema_out}')
+
+#Excecutioon block
+if __name__ == '__main__':
+    #target folder
+    TARGET_FOLDER = 'data\raw\extracted\2025_2026'
+
+    profile_crm_dump(TARGET_FOLDER)
