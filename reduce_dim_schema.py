@@ -1,7 +1,8 @@
 import pandas as pd
 from pathlib import Path
 
-def compress_schema_map(input_csv: str = '02_column_schema_map.csv', output_csv: str='03_global_dictionary_raw.csv'):
+#HARDCODES NOT WANTED --> 
+def compress_schema_map(input_csv: str = '02_column_schema_map_03.csv', output_csv: str='03_global_dictionary_raw.csv'):
     '''Collapses the file-level schema map into a distinct column vocab'''
 
     if not Path(input_csv).exists():
@@ -16,7 +17,7 @@ def compress_schema_map(input_csv: str = '02_column_schema_map.csv', output_csv:
         appearance_count=('source_file', 'count'),
         files_found_in=('source_file', lambda x: ' | '.join(x.unique())),
         avg_null_percentage=('null_percentage', 'mean'),
-        dominant_type=('inferred_type', lambda x: x.mode()[0] if not x.mode().empty() else 'UNKNOWN')
+        dominant_type=('inferred_type', lambda x: x.mode()[0] if not x.mode().empty else 'UNKNOWN')
     ).reset_index()
 
     #sort by requency (most common col first) then by lowest null percentages
@@ -38,5 +39,7 @@ def compress_schema_map(input_csv: str = '02_column_schema_map.csv', output_csv:
     print(f' -> Unique Columns: {new_rows} ({compression_ratio}% reduction)')
     print(f' -> Exported to: {output_csv}')
 
-    if __name__ == '__main__':
-        compress_schema_map()
+    #if __name__ == '__main__':
+    #    compress_schema_map()
+
+compress_schema_map()
