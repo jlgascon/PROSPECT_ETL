@@ -250,5 +250,5 @@ if __name__ == '__main__':
         print(f'\n[*] Initializing DTale diagnostic servers...')
 
         if not master_eav.empty:
-            d_eav = dtale.show(master_eav, name='EAV Ledger')
+            d_eav = dtale.show(master_eav, name='EAV Ledger', host='localhost')
             print(f'   [>] EAV Table loaded at: {d_eav.main_url()}')
