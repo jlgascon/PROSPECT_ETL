@@ -261,7 +261,7 @@ if __name__ == '__main__':
 
             try:
                 while True:
-                    time.sleep()
+                    time.sleep(1)
             except KeyboardInterrupt:
                 print(f'\n[*] Keyboard interrupt detected. Terminating server')
                 exit(0)
