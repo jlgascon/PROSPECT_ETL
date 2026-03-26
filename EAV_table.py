@@ -169,22 +169,29 @@ def build_eav_pipeline(directory_path):
                 master_edges.append(file_edges)
                 print(f'   [+] Extracted {len(file_edges)} HAS_PARENT edges')
                
-            # 4. Attribute Triage (Who owns what?)
+           # 4. Attribute Triage (Who owns what?)
             all_columns = df.columns.tolist()
             core_system_cols = ['Student_UUID', 'Parent_UUID', 'Source_File']
             core_data_cols = [c for c in all_columns if c.startswith('Core_')]
            
-            # Heuristic routing: If the unmapped header contains 'parent' or 'guardian', it goes to the parent node.
-            # Everything else defaults to the student node.
+            # --- THE HYBRID EAV FIX: Splitting the Core Data ---
+            # We route the un-meltable identity columns to the correct entity
+            parent_core_cols = [c for c in core_data_cols if 'parent' in c.lower() or 'guardian' in c.lower()]
+            student_core_cols = [c for c in core_data_cols if c not in parent_core_cols]
+           
+            # Heuristic routing for the variable data (The columns that WILL melt)
             parent_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols and ('parent' in c.lower() or 'guardian' in c.lower())]
             student_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols and c not in parent_value_vars]
            
-            # 5A. Melt the Student Attributes
+            # 5A. Melt the Student Attributes (Fat EAV)
             student_df = df.dropna(subset=['Student_UUID'])
             if not student_df.empty and student_value_vars:
+                # Lock the student_core_cols into the bedrock alongside the UUID
+                student_id_vars = ['Student_UUID', 'Source_File'] + student_core_cols
+               
                 student_eav = pd.melt(
                     student_df,
-                    id_vars=['Student_UUID', 'Source_File'],
+                    id_vars=student_id_vars,
                     value_vars=student_value_vars,
                     var_name='Attribute',
                     value_name='Value'
@@ -193,12 +200,15 @@ def build_eav_pipeline(directory_path):
                 student_eav['Entity_Type'] = 'Student'
                 master_eav_frames.append(student_eav)
                
-            # 5B. Melt the Parent Attributes
+            # 5B. Melt the Parent Attributes (Fat EAV)
             parent_df = df.dropna(subset=['Parent_UUID'])
             if not parent_df.empty and parent_value_vars:
+                # Lock the parent_core_cols into the bedrock alongside the UUID
+                parent_id_vars = ['Parent_UUID', 'Source_File'] + parent_core_cols
+               
                 parent_eav = pd.melt(
                     parent_df,
-                    id_vars=['Parent_UUID', 'Source_File'],
+                    id_vars=parent_id_vars,
                     value_vars=parent_value_vars,
                     var_name='Attribute',
                     value_name='Value'
@@ -208,7 +218,8 @@ def build_eav_pipeline(directory_path):
                 master_eav_frames.append(parent_eav)
                
         except Exception as e:
-            print(f"Failed processing {file_name} {os.path.basename(file_path)}: {e}")
+            # Note: I cleaned up this print statement. file_name is already defined earlier in your loop.
+            print(f"    [!] FATAL ERROR processing {file_name}: {e}")
            
     # 6. Final Concatenation and Null Purge
     final_eav = pd.concat(master_eav_frames, ignore_index=True) if master_eav_frames else pd.DataFrame()
