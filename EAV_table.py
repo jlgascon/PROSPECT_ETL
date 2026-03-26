@@ -115,7 +115,7 @@ def robust_ingest(file_path):
 # Batch processor
 
 def build_eav_pipeline(directory_path):
-    all_files = glob.glob(os.path.join(directory_path, "*.csv"))
+    all_files = glob.glob(os.path.join(directory_path, "**", "*.csv"), recursive=True)
     master_eav_frames = []
     master_edges = [] # We now need a ledger for our graph edges
     
@@ -239,7 +239,7 @@ if __name__ == '__main__':
     target_directory = args.dir
 
     if not os.path.isdir(target_directory):
-        print(f'[!] FATAL: Directory '{target_directory}' does not exist.')
+        print(f'[!] FATAL: Directory {target_directory} does not exist.')
         exit(1)
 
     master_eav, master_edges = build_eav_pipeline(target_directory)
