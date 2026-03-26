@@ -250,5 +250,18 @@ if __name__ == '__main__':
         print(f'\n[*] Initializing DTale diagnostic servers...')
 
         if not master_eav.empty:
-            d_eav = dtale.show(master_eav, name='EAV Ledger', host='localhost')
-            print(f'   [>] EAV Table loaded at: {d_eav.main_url()}')
+
+            #getting a more definitive instantiation: space instead of underscore in name attr, forced IPv4, static port
+
+            d_eav = dtale.show(master_eav, name='EAV Ledger', host='localhost', port=8000)
+            #print(f'   [>] EAV Table loaded at: {d_eav.main_url()}')
+            print(f'   [>] EAV Table loaded at: http:127.0.0.1:8000')
+            print(f'\n[*] Server is live, script execution suspended')
+            print(f'[*] Press CTRL + C to kill server and exit')
+
+            try:
+                while True:
+                    time.sleep()
+            except KeyboardInterrupt:
+                print(f'\n[*] Keyboard interrupt detected. Terminating server')
+                exit(0)
