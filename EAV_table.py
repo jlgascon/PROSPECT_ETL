@@ -3,6 +3,10 @@ import hashlib
 import os
 import glob
 import re
+import argparse
+import dtale
+import time
+
 
 # Define the global homogonization dict
 # Variants of headers to be cleaned before creating prospect_UUID hash
@@ -217,3 +221,34 @@ def build_eav_pipeline(directory_path):
         final_eav['Attribute'] = final_eav['Attribute'].astype(str).str.strip().str.lower().str.replace(' ', '_')
        
     return final_eav, final_edges
+
+if __name__ == '__main__':
+    #1 configure the cli parser
+    parser = argparse.ArgumentParser(description="Ingest, homogoenize, and pivot prospect CSV schemas into an EAV database")
+    parser.add_argument(
+        '-d', '--dir',
+        type=str,
+        required=True,
+        help='Target directory path containing the raw csv files'
+
+    )
+
+    args = parser.parse_args()
+
+    # trigger the pipeline 
+    target_directory = args.dir
+
+    if not os.path.isdir(target_directory):
+        print(f'[!] FATAL: Directory '{target_directory}' does not exist.')
+        exit(1)
+
+    master_eav, master_edges = build_eav_pipeline(target_directory)
+
+    # DTale visualization & Server suspension
+
+    if not master_eav.empty or not master_edges.empty:
+        print(f'\n[*] Initializing DTale diagnostic servers...')
+
+        if not master_eav.empty:
+            d_eav = dtale.show(master_eav, name='EAV_Ledger')
+            print(f'   [>] EAV Table loaded at: {d_eav.main_url()}')
