@@ -182,7 +182,10 @@ def build_eav_pipeline(directory_path):
             student_core_cols = [c for c in core_data_cols if c not in parent_core_cols]
 
             # Check if this file is explicitly a Parent-only extraction type
-            is_parent_file = 'parent' in file_name.lower()
+            #is_parent_file = 'parent' in file_name.lower()
+
+            # If the file generated Parent UUIDs but zero Student UUIDs, it's a parent file.
+            is_parent_file = ('parent' in file_name.lower()) or (df['Student_UUID'].isna().all() and not df['Parent_UUID'].isna().all())
            
             if is_parent_file:
                 #if it is a parent file, ALL non-core attributes belong to the parent
