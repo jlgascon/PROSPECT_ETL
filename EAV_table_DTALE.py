@@ -16,6 +16,8 @@ header_map = {
     'Email ':'Core_Email',
     'Email Address':'Core_Email',
     'Email Address:':'Core_Email',
+    'E-mail Address:':'Core_Email',
+    'E-mail Address':'Core_Email',
     'First Name':'Core_First_Name',
     'First name':'Core_First_Name',
     'First Name:':'Core_First_Name',
@@ -127,7 +129,7 @@ def build_eav_pipeline(directory_path):
         print(f'\n[>] Ingesting: {file_name}')
 
         try:
-            df = robust_ingest(file_path) # Using our bulletproof ingestion
+            df = robust_ingest(file_path) 
 
             if df.empty:
                 print(f'    [!] File is empty or failed ingestion. Skipping.')
