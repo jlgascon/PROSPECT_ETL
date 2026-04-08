@@ -178,10 +178,19 @@ def build_eav_pipeline(directory_path):
             # We route the un-meltable identity columns to the correct entity
             parent_core_cols = [c for c in core_data_cols if 'parent' in c.lower() or 'guardian' in c.lower()]
             student_core_cols = [c for c in core_data_cols if c not in parent_core_cols]
+
+            # Check if this file is explicitly a Parent-only extraction type
+            is_parent_file = 'parent' in file_name.lower()
            
-            # Heuristic routing for the variable data (The columns that WILL melt)
-            parent_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols and ('parent' in c.lower() or 'guardian' in c.lower())]
-            student_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols and c not in parent_value_vars]
+            if is_parent_file:
+                #if it is a parent file, ALL non-core attributes belong to the parent
+                parent_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols]
+                student_value_vars = []
+
+            else: 
+                # Standard heuristic routing for the variable data (The columns that WILL melt)
+                parent_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols and ('parent' in c.lower() or 'guardian' in c.lower())]
+                student_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols and c not in parent_value_vars]
            
             # 5A. Melt the Student Attributes (Fat EAV)
             student_df = df.dropna(subset=['Student_UUID'])
