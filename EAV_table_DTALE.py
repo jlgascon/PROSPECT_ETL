@@ -99,6 +99,15 @@ def robust_ingest(file_path):
     # 2. Structural Extraction
     try:
         df = pd.read_csv(file_path, header=header_idx, low_memory=False, on_bad_lines='skip', encoding=successful_enc)
+    except UnicodeDecodeError:
+            
+        # THE FIX: If the special character was hiding past row 30, fallback to Windows encoding for the full read
+        print(f"    [*] {os.path.basename(file_path)}: UTF-8 passed preamble but failed full read. Falling back to cp1252.")
+        try:
+            df = pd.read_csv(file_path, header=header_idx, low_memory=False, on_bad_lines='skip', encoding='cp1252')
+        except Exception as e_fallback:
+            print(f"[!] {os.path.basename(file_path)} failed full fallback read: {e_fallback}")
+            return pd.DataFrame()
     except Exception as e:
         print(f"[!] {os.path.basename(file_path)} failed full read on {successful_enc}: {e}")
         return pd.DataFrame()
@@ -140,7 +149,7 @@ def build_eav_pipeline(directory_path):
                 df['Source_File'] = f"'{file_name}"
             else:
                 df['Source_File'] = file_name
-                
+
             inital_rows = len(df)
            
             # 1. Taxonomic Homogenization
