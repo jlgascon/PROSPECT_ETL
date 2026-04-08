@@ -135,7 +135,12 @@ def build_eav_pipeline(directory_path):
                 print(f'    [!] File is empty or failed ingestion. Skipping.')
                 continue 
 
-            df['Source_File'] = os.path.basename(file_path)
+            # Prevent spreadsheets from turning filenames starting with operation chars into #NAME? errors
+            if file_name.startswith(('-', '=', '+', '@')):
+                df['Source_File'] = f"'{file_name}"
+            else:
+                df['Source_File'] = file_name
+                
             inital_rows = len(df)
            
             # 1. Taxonomic Homogenization
