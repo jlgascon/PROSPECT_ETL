@@ -223,55 +223,88 @@ def build_eav_pipeline(directory_path):
             # Prevent spreadsheets from turning filenames starting with operation chars into #NAME? errors
             df['Source_File'] = f"'{file_name}" if file_name.startswith(('-', '=', '+', '@')) else file_name
 
-            #initial_rows = len(df)
+            # --- INTERACTION HASH GENERATION ---
+            #cryptographic footprint of the raw data before moving to taxonomy shifts
+            row_strings = df.fillna('').astype(str).agg(''.join, axis=1)
+            df['Interaction_Hash'] = [hashlib.sha256(f'{file_name}_{i}_{val}'.encode('utf-8')).hexdigest() for i, val in enumerate(row_strings)]
            
-            # A. Taxonomic Homogenization
+            # --- BASELINE EVENT INJECTION ---
+            # ensures purely demographic lists (name, email only) dont dissapear during the melt and we have at least one attr value
+            df['raw_unmapped_baseline_interaction'] = True
+
+
+            # Taxonomic Homogenization & Header Standardization
             df.columns = df.columns.astype(str).str.strip()
-            df = df.rename(columns=header_map)
+            new_columns = []
+            
+            #df = df.rename(columns=header_map)
+
+            # --- HORIZONTAL COMPLETENESS (UNMAPPED TAGGING) --- 
+
+            for col in df.columns:
+                if col in ['Source_File','Source_Sheet', 'Interaction_Hash']:
+                    new_columns.append(col)
+                elif col in header_map:
+                    new_columns.append(header_map[col])
+                else:
+                    #regex free string cleaning of to be named col
+                    clean_col = ''.join(char for char in col.replace(' ', '_').lower() if char.isalnum() or char == '_')
+                    if not clean_col.startswith('raw_unmapped_'):
+                        new_columns.append(f'raw_unmapped_{clean_col}')
+                    else: 
+                        new_columns.append(clean_col)
+
+            df.columns = new_columns
             df = df.groupby(df.columns, axis=1).first()
-           
-            # B. Entity Resolution (Dual-Core Generation)
+
+            # Entity Resolution (Dual-Core Generation)
             df['Student_UUID'] = df.apply(lambda row: generate_entity_uuid(
                 row, 'Core_Email', 'Core_First_Name', 'Core_Last_Name'), axis=1)
                
             df['Parent_UUID'] = df.apply(lambda row: generate_entity_uuid(
                 row, 'Core_Parent_Email', 'Core_Parent_First_Name', 'Core_Parent_Last_Name'), axis=1)
             
+            # --- LOSSLESS ORPHAN CATCHER (zerodropna) --- 
+            #if a row fails to generate any UUID, tag it unresolved and anchor it to its hash
+            df['Unresolved_UUID'] = df.apply(lambda row: row['Interaction_Hash'] if pd.isna(row['Student_UUID']) and pd.isna(row['Parent_UUID'])
+                                             else None, axis =1)
+            
+            count_unresolved = df['Unresolved_UUID'].notna().sum()
+            count_unresolved_rows = pandas_parsed_rows - count_unresolved
+         
+            # Purge absolute ghosts (rows where BOTH entities failed to generate)
+            #df = df.dropna(subset=['Student_UUID', 'Parent_UUID'], how='all')
+            #retained_rows = len(df)
 
             # --- THE AUDIT --- (Calculated before the melt multiplies the rows)
-
-            # Purge absolute ghosts (rows where BOTH entities failed to generate)
-            df = df.dropna(subset=['Student_UUID', 'Parent_UUID'], how='all')
-            retained_rows = len(df)
 
             master_audit.append({
                 'Source_File': file_name,
                 '1_Raw_Expected': raw_expected,
                 '2_Pandas_Parsed': pandas_parsed_rows,
-                '3_Entities_Retained': retained_rows, 
-                'Parse_Variance': max(0, raw_expected - pandas_parsed_rows),
-                'Ghosts_dropped': max(0, pandas_parsed_rows - retained_rows)
+                '3_Entities_Retained': count_unresolved_rows,
+                '4_Unresolved_Ghosts':count_unresolved, 
+                'Parse_Variance': max(0, raw_expected - pandas_parsed_rows)
             })
 
             if df.empty:
                 print(f'   [-] Zero valid entities resolved. Skipping melt.')
                 continue
             
-            print(f'  [+] Resolved entities: Retained {retained_rows}/{pandas_parsed_rows} parsed rows.')
-
-
-            # 3. Extract the Relational Edges (The Graph Foundation)
+            print(f'  [+] Parsed {pandas_parsed_rows} rows: {count_unresolved_rows} Resolved Entities | {count_unresolved} Unresolved Ghosts')
+            
+            # --- Extract the Relational Edges (The Graph Foundation) ---
             # Find the rows where we successfully generated BOTH a student and a parent
             mask_both = df['Student_UUID'].notna() & df['Parent_UUID'].notna()
             if mask_both.any():
-                file_edges = df.loc[mask_both, ['Student_UUID', 'Parent_UUID', 'Source_File']].copy()
+                file_edges = df.loc[mask_both, ['Student_UUID', 'Parent_UUID', 'Source_File', 'Interaction_Hash']].copy()
                 file_edges['Relationship'] = 'HAS_PARENT'
                 master_edges.append(file_edges)
                 print(f'   [+] Extracted {len(file_edges)} HAS_PARENT edges')
                
-           # 4. Attribute Triage (Who owns what?)
+           #  Attribute Triage (Who owns what?)
             all_columns = df.columns.tolist()
-            core_system_cols = ['Student_UUID', 'Parent_UUID', 'Source_File', 'Source_Sheet']
+            core_system_cols = ['Student_UUID', 'Parent_UUID', 'Unresolved_UUID', 'Interaction_Hash', 'Source_File', 'Source_Sheet']
             core_data_cols = [c for c in all_columns if c.startswith('Core_')]
            
             # --- THE HYBRID EAV FIX: Splitting the Core Data ---
@@ -295,11 +328,11 @@ def build_eav_pipeline(directory_path):
                 parent_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols and ('parent' in c.lower() or 'guardian' in c.lower())]
                 student_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols and c not in parent_value_vars]
            
-            # 5A. Melt the Student Attributes (Fat EAV)
+            # Melt the Student Attributes (Fat EAV)
             student_df = df.dropna(subset=['Student_UUID'])
             if not student_df.empty and student_value_vars:
                 # Lock the student_core_cols into the bedrock alongside the UUID and dynamically include Source_Sheet if it exists
-                student_id_vars = [c for c in ['Student_UUID', 'Source_File', 'Source_Sheet'] + student_core_cols if c in student_df.columns]
+                student_id_vars = [c for c in ['Student_UUID', 'Interaction_Hash', 'Source_File', 'Source_Sheet'] + student_core_cols if c in student_df.columns]
                
                 student_eav = pd.melt(
                     student_df,
@@ -312,11 +345,11 @@ def build_eav_pipeline(directory_path):
                 student_eav['Entity_Type'] = 'Student'
                 master_eav_frames.append(student_eav)
                
-            # 5B. Melt the Parent Attributes (Fat EAV)
+            # Melt the Parent Attributes (Fat EAV)
             parent_df = df.dropna(subset=['Parent_UUID'])
             if not parent_df.empty and parent_value_vars:
                 # Lock the parent_core_cols into the bedrock alongside the UUID
-                parent_id_vars = [c for c in ['Parent_UUID', 'Source_File', 'Source_Sheet'] + parent_core_cols if c in parent_df.columns]
+                parent_id_vars = [c for c in ['Parent_UUID', 'Interaction_Hash', 'Source_File', 'Source_Sheet'] + parent_core_cols if c in parent_df.columns]
                
                 parent_eav = pd.melt(
                     parent_df,
@@ -328,12 +361,33 @@ def build_eav_pipeline(directory_path):
                 parent_eav = parent_eav.rename(columns={'Parent_UUID': 'Entity_UUID'})
                 parent_eav['Entity_Type'] = 'Parent'
                 master_eav_frames.append(parent_eav)
-               
+
+            # Melt Unresolved Attributes (The Ghost)
+            unresolved_df = df.dropna(subset=['Unresolved_UUID'])
+            if not unresolved_df.empty:
+                #core demographics remain in ID bedrock so fragmented names without emails are not lost
+                unresolved_id_vars = [c for c in ['Unresolved_UUID', 'Interaction_Hash', 'Source_File', 'Source_Sheet'] + parent_core_cols if c in unresolved_df.columns]
+                unresolved_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols]
+
+                unresolved_eav = pd.melt(
+                    unresolved_df, 
+                    id_vars = unresolved_id_vars, 
+                    value_vars = unresolved_value_vars,
+                    var_name='Attribute',
+                    value_name='Value'
+                )
+                unresolved_eav = unresolved_eav.rename(columns={'Unresolved_UUID': 'Entity_UUID'})
+                unresolved_eav['Entity_Type'] = 'Unresolved'
+                master_eav_frames.append(unresolved_eav)
+
+
         except Exception as e:
+            import traceback
             # Note: I cleaned up this print statement. file_name is already defined earlier in your loop.
             print(f"    [!] FATAL ERROR processing {file_name}: {e}")
+            traceback.print_exc()
            
-    # 6. Final Concatenation and Null Purge
+    # Final Concatenation and Null Purge
     final_eav = pd.concat(master_eav_frames, ignore_index=True) if master_eav_frames else pd.DataFrame()
     final_edges = pd.concat(master_edges, ignore_index=True) if master_edges else pd.DataFrame()
     final_audit = pd.DataFrame(master_audit) # create the ledger df
@@ -342,13 +396,14 @@ def build_eav_pipeline(directory_path):
         # Purge the void and standardize
         final_eav = final_eav.dropna(subset=['Value'])
         final_eav = final_eav[~final_eav['Value'].astype(str).str.strip().isin(['', 'nan', 'NaN', 'None'])]
-        final_eav['Attribute'] = final_eav['Attribute'].astype(str).str.strip().str.lower().str.replace(' ', '_')
+        #regex = False prevents compilation errors when stdizing the attributes
+        final_eav['Attribute'] = final_eav['Attribute'].astype(str).str.strip().str.lower().str.replace(' ', '_', regex=False)
        
     return final_eav, final_edges, final_audit
 
 if __name__ == '__main__':
-    #1 configure the cli parser
-    parser = argparse.ArgumentParser(description="Ingest, homogoenize, and pivot prospect CSV schemas into an EAV database")
+    # --- configure the cli parser
+    parser = argparse.ArgumentParser(description="Ingest, homogoenize, and prospect CSV schemas into an EAV database")
     parser.add_argument(
         '-d', '--dir',
         type=str,
@@ -359,9 +414,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    # trigger the pipeline 
-    #target_directory = args.dir
-
+    # -- trigger the pipeline 
+    
     if not os.path.isdir(args.dir):
         print(f'[!] FATAL: Directory {args.dir} does not exist.')
         exit(1)
