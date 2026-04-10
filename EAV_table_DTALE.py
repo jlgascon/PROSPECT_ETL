@@ -101,7 +101,7 @@ def robust_ingest(file_path):
         df = pd.read_csv(file_path, header=header_idx, low_memory=False, on_bad_lines='skip', encoding=successful_enc)
     except UnicodeDecodeError:
             
-        # THE FIX: If the special character was hiding past row 30, fallback to Windows encoding for the full read
+        #If the special character was hiding past row 30, fallback to Windows encoding for the full read
         print(f"    [*] {os.path.basename(file_path)}: UTF-8 passed preamble but failed full read. Falling back to cp1252.")
         try:
             df = pd.read_csv(file_path, header=header_idx, low_memory=False, on_bad_lines='skip', encoding='cp1252')

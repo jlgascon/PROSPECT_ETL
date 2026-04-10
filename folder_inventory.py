@@ -3,6 +3,8 @@ import os
 from collections import defaultdict
 import pandas as pd
 
+#used to catalog and describe the filetypes in the given directory
+
 def list_all_file_types(root_dir):
     """
     Traverses subdirectories to map every file to its extension.
@@ -96,4 +98,4 @@ if __name__ == "__main__":
     target = r".\data\raw\extracted\2024_2025\5. Data Collection"
     file_data = list_all_file_types(target)
     #display_results(file_data)
-    results_df = export_file_inventory(target, output_filename="file_report_24_25.csv")
+    results_df = export_file_inventory(target, output_filename="file_report_24_25_2.csv")

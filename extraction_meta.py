@@ -106,8 +106,8 @@ def profile_crm_dump(target_directory: str, output_dir: str = '.'):
     df_inventory = pd.DataFrame(file_inventory)
     df_schema = pd.DataFrame(column_schema)
 
-    inventory_out = Path(output_dir) / '01_file_inventory.csv'
-    schema_out = Path(output_dir) / '02_column_schema_map.csv'
+    inventory_out = Path(output_dir) / 'file_inventory_24_25_1.csv'
+    schema_out = Path(output_dir) / 'column_schema_map_24_25_1.csv'
 
     df_inventory.to_csv(inventory_out, index=False)
     df_schema.to_csv(schema_out, index=False)
@@ -119,6 +119,6 @@ def profile_crm_dump(target_directory: str, output_dir: str = '.'):
 #Excecutioon block
 if __name__ == '__main__':
     #target folder
-    TARGET_FOLDER = r'data\raw\extracted\2025_2026'
+    TARGET_FOLDER = r'data\raw\extracted\2024_2025'
 
     profile_crm_dump(TARGET_FOLDER)
