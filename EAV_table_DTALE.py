@@ -2,11 +2,14 @@ import pandas as pd
 import hashlib
 import os
 import glob
-import re
+# import re
 import argparse
 import dtale
 import time
+import warnings
 
+# suppress openpyxl data validation extension warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 # Define the global homogonization dict
 # Variants of headers to be cleaned before creating prospect_UUID hash
@@ -33,7 +36,7 @@ header_map = {
     'Parent Last Name':'Core_Parent_Last_Name',
 }
 
-# define the hash fxn
+# Generate the interaction and entity hashes
 
 def generate_entity_uuid(row, email_col, fname_col, lname_col):
 
@@ -49,9 +52,10 @@ def generate_entity_uuid(row, email_col, fname_col, lname_col):
     l_name = str(row.get(lname_col, '')).lower().strip()
 
 
-
     #some aggrod regex to prevent hash collision from typos (trailing punctuation etc)
-    email = re.sub(r'[^a-zA-Z0-9@.+_-]','', email)
+    #email = re.sub(r'[^a-zA-Z0-9@.+_-]','', email)
+    allowed_chars = set('abcdefghijklmnopqrstuvwxyz0123456789@.+_-') # regex was finding \x incomplete escapes and broke down
+    email = ''.join(c for c in email if c in allowed_chars)
 
     #core str concatenation
     #prioritizing email, then falling back to first + last name if email is missing
@@ -68,67 +72,136 @@ def generate_entity_uuid(row, email_col, fname_col, lname_col):
 
 def robust_ingest(file_path):
     """
-    Handles encoding cascades, preamble sniffing, and structural cleaning
-    prior to returning a dataframe for EAV processing.
+    Handles encoding cascades, excel multi sheet extraction, header preamble sniffing, and structural cleaning
+    prior to returning a cleaned dataframe for EAV processing and the raw expected row counts.
     """
-    encodings = ['utf-8', 'latin1', 'cp1252', 'utf-8-sig']
-    sample_df = None
-    successful_enc = None
-   
-    # 1. Encoding Cascade & Header Sniffing
-    for enc in encodings:
+    ext = os.path.splitext(file_path)[1].lower()
+    df = pd.DataFrame()
+    raw_expected_rows = 0
+
+    # --- 1. EXCEL EXTRACTION (.xlsx, .xls) ---
+
+    if ext in ['.xlsx','.xls']:
         try:
-            # Read top 30 rows raw to find the structural start
-            sample_df = pd.read_csv(file_path, nrows=30, header=None, low_memory=False, on_bad_lines='skip', encoding=enc)
-            successful_enc = enc
-            break
-        except UnicodeDecodeError:
-            continue
+            #sheet_name = None reads all sheets; header = None allows manual preamble sniffing
+            xls_dict = pd.read_excel(file_path, sheet_name=None, header=None)
+            combined_sheets = []
+
+            for sheet_name, sheet_df in xls_dict.items():
+                sheet_df.dropna(how='all', inplace=True) #drop entirely empty formatting rows
+                sheet_df.reset_index(drop=True, inplace=True)
+
+                if sheet_df.empty: continue
+
+                valid_counts = sheet_df.notna().sum(axis=1)
+                header_idx = int(valid_counts.idxmax()) if not valid_counts.empty else 0
+
+                #tally up the expected rows (total lines - header index - 1 for the header itself)
+                raw_expected_rows += max(0, len(sheet_df) - header_idx -1)
+
+                sheet_df.columns = sheet_df.iloc[header_idx]
+                sheet_df = sheet_df.iloc[header_idx+1:].copy()
+                sheet_df['Source_Sheet'] = sheet_name #tracks sub sheets from the workbook
+                combined_sheets.append(sheet_df)
+
+            if combined_sheets:
+                df = pd.concat(combined_sheets, ignore_index=True)
+
+        except Exception as e:
+            print(f'    [!] Excel read failed for {os.path.basename(file_path)}: {e}')
+            return pd.DataFrame(), 0
+        
+
+    # --- 2. CSV EXTRACTION (.csv) ---
+    elif ext == '.csv':
+        try:
+            #get the true OS level line count to catch ragged lines pd might ghost drop
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                total_lines = sum(1 for line in f if line.strip())
+
+        except:
+            total_lines = 0
+
+  
+        encodings = ['utf-8', 'latin1', 'cp1252', 'utf-8-sig']
+        sample_df, successful_enc = None, None
+   
+        # Encoding Cascade & Header Sniffing
+        for enc in encodings:
+            try:
+                # Read top 30 rows raw to find the structural start
+                sample_df = pd.read_csv(file_path, nrows=30, header=None, low_memory=False, on_bad_lines='skip', encoding=enc)
+                successful_enc = enc
+                break
+            except UnicodeDecodeError:
+                continue
            
-    if sample_df is None or sample_df.empty:
-        print(f"[!] {os.path.basename(file_path)} is empty or completely unreadable.")
-        return pd.DataFrame()
+        if sample_df is None or sample_df.empty:
+            print(f"[!] {os.path.basename(file_path)} is empty or completely unreadable.")
+            return pd.DataFrame(), 0
 
-    # Locate the header: The row with the maximum number of populated columns
-    valid_counts = sample_df.notna().sum(axis=1)
-    header_idx = int(valid_counts.idxmax())
-   
-    if header_idx > 0:
-        print(f" -> {os.path.basename(file_path)}: Preamble detected. Shifting header to row {header_idx}.")
+        # Locate the header: The row with the maximum number of populated columns
+        valid_counts = sample_df.notna().sum(axis=1)
+        header_idx = int(valid_counts.idxmax())
 
-    # 2. Structural Extraction
-    try:
-        df = pd.read_csv(file_path, header=header_idx, low_memory=False, on_bad_lines='skip', encoding=successful_enc)
-    except UnicodeDecodeError:
-            
-        #If the special character was hiding past row 30, fallback to Windows encoding for the full read
-        print(f"    [*] {os.path.basename(file_path)}: UTF-8 passed preamble but failed full read. Falling back to cp1252.")
+        raw_expected_rows = max(0, total_lines - header_idx - 1)
+    
+        if header_idx > 0:
+            print(f" -> {os.path.basename(file_path)}: Preamble detected. Shifting header to row {header_idx}.")
+
+        # Structural Extraction
         try:
-            df = pd.read_csv(file_path, header=header_idx, low_memory=False, on_bad_lines='skip', encoding='cp1252')
-        except Exception as e_fallback:
-            print(f"[!] {os.path.basename(file_path)} failed full fallback read: {e_fallback}")
-            return pd.DataFrame()
-    except Exception as e:
-        print(f"[!] {os.path.basename(file_path)} failed full read on {successful_enc}: {e}")
-        return pd.DataFrame()
+            df = pd.read_csv(file_path, header=header_idx, low_memory=False, on_bad_lines='skip', encoding=successful_enc)
+        except UnicodeDecodeError:
+                
+            #If the special character was hiding past row 30, fallback to Windows encoding for the full read
+            print(f"    [*] {os.path.basename(file_path)}: UTF-8 passed preamble but failed full read. Falling back to cp1252.")
 
-    # 3. Purging Delimiter Artifacts
-    # Convert invisible whitespace to NaN
-    df.replace(r'^\s*$', pd.NA, regex=True, inplace=True)
-    # Drop completely empty rows
-    df.dropna(how='all', inplace=True)
-   
-    # Clean up trailing comma phantom columns
-    clean_headers = [col for col in df.columns if not str(col).startswith('Unnamed:')]
-    df = df[clean_headers]
-   
-    return df
-# Batch processor
+            try:
+                df = pd.read_csv(file_path, header=header_idx, low_memory=False, on_bad_lines='skip', encoding='cp1252')
+            except Exception as e_fallback:
+                print(f"[!] {os.path.basename(file_path)} failed fallback read: {e_fallback}")
+                return pd.DataFrame(), raw_expected_rows
+        except Exception as e:
+            print(f"[!] {os.path.basename(file_path)} failed full read on {successful_enc}: {e}")
+            return pd.DataFrame(), raw_expected_rows
+
+    # --- 3. SHARED STRUCTURAL CLEANUPS ---
+    if not df.empty:
+        #convert whitespace to NaN
+        #df.replace(r'^\x*$', pd.NA, regex=True, inplace=True) #removed cause of regex \x fatal error 
+
+        # Regex free - map pure whitespace cells to pd.Na using an apply lambda 
+        # which bypasses the regex engine, corrupted '\x' bytes are treated as text and ignored 
+
+        for col in df.columns:
+            if pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(df[col]):
+                df[col] = df[col].apply(lambda x: pd.NA if isinstance(x, str) and not x.strip() else x)
+
+        #excel relies heavily on this to purge the phantom formatting columns
+        df.dropna(axis=1, how='all', inplace=True)
+        #drop completely empty rows
+        df.dropna(how='all', inplace=True)
+
+        # Clean up trailing comma phantom columns
+        clean_headers = [col for col in df.columns if pd.notna(col) and not str(col).startswith('Unnamed:')]
+        df = df[clean_headers]
+    
+    return df, raw_expected_rows
+
+# BATCH PROCESSOR PIPELINE, TABLE BUILDS, EDGE BUILDS
 
 def build_eav_pipeline(directory_path):
-    all_files = glob.glob(os.path.join(directory_path, "**", "*.csv"), recursive=True)
+
+    #GLOB which grabs csv, xlsx, and xls
+
+    all_files = []
+    for ext in ('*.csv','*.xlsx','*.xls'):
+        all_files.extend(glob.glob(os.path.join(directory_path, "**", ext), recursive=True))
+
     master_eav_frames = []
     master_edges = [] # We now need a ledger for our graph edges
+    master_audit = [] # Audit ledger
     
     print(f'[*] Commencing pipeline execution on {len(all_files)} files...')
 
@@ -138,42 +211,53 @@ def build_eav_pipeline(directory_path):
         print(f'\n[>] Ingesting: {file_name}')
 
         try:
-            df = robust_ingest(file_path) 
+            # extract data and get raw expected row counts
+            df, raw_expected = robust_ingest(file_path)
+            pandas_parsed_rows = len(df) 
 
             if df.empty:
                 print(f'    [!] File is empty or failed ingestion. Skipping.')
-                continue 
-
+                master_audit.append({'Source_File': file_name, '1_Raw_Expected': raw_expected, '2_Pandas_Parsed':0, '3_Entities_Retained':0})
+                continue
+            
             # Prevent spreadsheets from turning filenames starting with operation chars into #NAME? errors
-            if file_name.startswith(('-', '=', '+', '@')):
-                df['Source_File'] = f"'{file_name}"
-            else:
-                df['Source_File'] = file_name
+            df['Source_File'] = f"'{file_name}" if file_name.startswith(('-', '=', '+', '@')) else file_name
 
-            inital_rows = len(df)
+            #initial_rows = len(df)
            
-            # 1. Taxonomic Homogenization
-            df.columns = df.columns.str.strip()
-
+            # A. Taxonomic Homogenization
+            df.columns = df.columns.astype(str).str.strip()
             df = df.rename(columns=header_map)
             df = df.groupby(df.columns, axis=1).first()
            
-            # 2. Entity Resolution (Dual-Core Generation)
+            # B. Entity Resolution (Dual-Core Generation)
             df['Student_UUID'] = df.apply(lambda row: generate_entity_uuid(
                 row, 'Core_Email', 'Core_First_Name', 'Core_Last_Name'), axis=1)
                
             df['Parent_UUID'] = df.apply(lambda row: generate_entity_uuid(
                 row, 'Core_Parent_Email', 'Core_Parent_First_Name', 'Core_Parent_Last_Name'), axis=1)
-           
+            
+
+            # --- THE AUDIT --- (Calculated before the melt multiplies the rows)
+
             # Purge absolute ghosts (rows where BOTH entities failed to generate)
             df = df.dropna(subset=['Student_UUID', 'Parent_UUID'], how='all')
             retained_rows = len(df)
 
+            master_audit.append({
+                'Source_File': file_name,
+                '1_Raw_Expected': raw_expected,
+                '2_Pandas_Parsed': pandas_parsed_rows,
+                '3_Entities_Retained': retained_rows, 
+                'Parse_Variance': max(0, raw_expected - pandas_parsed_rows),
+                'Ghosts_dropped': max(0, pandas_parsed_rows - retained_rows)
+            })
+
             if df.empty:
-                print(f'   [-] Zero valid entities resolved from {initial_rows} rows. Skipping melt.')
+                print(f'   [-] Zero valid entities resolved. Skipping melt.')
                 continue
             
-            print(f'  [+] Resolved entities: Retained {retained_rows}/{inital_rows} rows.')
+            print(f'  [+] Resolved entities: Retained {retained_rows}/{pandas_parsed_rows} parsed rows.')
 
 
             # 3. Extract the Relational Edges (The Graph Foundation)
@@ -187,7 +271,7 @@ def build_eav_pipeline(directory_path):
                
            # 4. Attribute Triage (Who owns what?)
             all_columns = df.columns.tolist()
-            core_system_cols = ['Student_UUID', 'Parent_UUID', 'Source_File']
+            core_system_cols = ['Student_UUID', 'Parent_UUID', 'Source_File', 'Source_Sheet']
             core_data_cols = [c for c in all_columns if c.startswith('Core_')]
            
             # --- THE HYBRID EAV FIX: Splitting the Core Data ---
@@ -214,8 +298,8 @@ def build_eav_pipeline(directory_path):
             # 5A. Melt the Student Attributes (Fat EAV)
             student_df = df.dropna(subset=['Student_UUID'])
             if not student_df.empty and student_value_vars:
-                # Lock the student_core_cols into the bedrock alongside the UUID
-                student_id_vars = ['Student_UUID', 'Source_File'] + student_core_cols
+                # Lock the student_core_cols into the bedrock alongside the UUID and dynamically include Source_Sheet if it exists
+                student_id_vars = [c for c in ['Student_UUID', 'Source_File', 'Source_Sheet'] + student_core_cols if c in student_df.columns]
                
                 student_eav = pd.melt(
                     student_df,
@@ -232,7 +316,7 @@ def build_eav_pipeline(directory_path):
             parent_df = df.dropna(subset=['Parent_UUID'])
             if not parent_df.empty and parent_value_vars:
                 # Lock the parent_core_cols into the bedrock alongside the UUID
-                parent_id_vars = ['Parent_UUID', 'Source_File'] + parent_core_cols
+                parent_id_vars = [c for c in ['Parent_UUID', 'Source_File', 'Source_Sheet'] + parent_core_cols if c in parent_df.columns]
                
                 parent_eav = pd.melt(
                     parent_df,
@@ -252,6 +336,7 @@ def build_eav_pipeline(directory_path):
     # 6. Final Concatenation and Null Purge
     final_eav = pd.concat(master_eav_frames, ignore_index=True) if master_eav_frames else pd.DataFrame()
     final_edges = pd.concat(master_edges, ignore_index=True) if master_edges else pd.DataFrame()
+    final_audit = pd.DataFrame(master_audit) # create the ledger df
    
     if not final_eav.empty:
         # Purge the void and standardize
@@ -259,7 +344,7 @@ def build_eav_pipeline(directory_path):
         final_eav = final_eav[~final_eav['Value'].astype(str).str.strip().isin(['', 'nan', 'NaN', 'None'])]
         final_eav['Attribute'] = final_eav['Attribute'].astype(str).str.strip().str.lower().str.replace(' ', '_')
        
-    return final_eav, final_edges
+    return final_eav, final_edges, final_audit
 
 if __name__ == '__main__':
     #1 configure the cli parser
@@ -268,39 +353,53 @@ if __name__ == '__main__':
         '-d', '--dir',
         type=str,
         required=True,
-        help='Target directory path containing the raw csv files'
+        help='Target directory path containing the raw files'
 
     )
 
     args = parser.parse_args()
 
     # trigger the pipeline 
-    target_directory = args.dir
+    #target_directory = args.dir
 
-    if not os.path.isdir(target_directory):
-        print(f'[!] FATAL: Directory {target_directory} does not exist.')
+    if not os.path.isdir(args.dir):
+        print(f'[!] FATAL: Directory {args.dir} does not exist.')
         exit(1)
 
-    master_eav, master_edges = build_eav_pipeline(target_directory)
+    #pipeline returns the 3 variables
+    master_eav, master_edges, master_audit = build_eav_pipeline(args.dir)
+
+    #Save the audit for records
+    if not master_audit.empty:
+        audit_path = 'extraction_audit_ledger.csv'
+        master_audit.to_csv(audit_path, index=False)
+        print(f'\n[+] Audit Ledger saved permanently to: {audit_path}')
 
     # DTale visualization & Server suspension
 
     if not master_eav.empty or not master_edges.empty:
         print(f'\n[*] Initializing DTale diagnostic servers...')
 
+        # load the EAV df (data instance 1)
         if not master_eav.empty:
 
             #getting a more definitive instantiation: space instead of underscore in name attr, forced IPv4, static port
 
-            d_eav = dtale.show(master_eav, name='EAV Ledger', host='localhost', port=8000)
-            #print(f'   [>] EAV Table loaded at: {d_eav.main_url()}')
-            print(f'   [>] EAV Table loaded at: http:127.0.0.1:8000')
-            print(f'\n[*] Server is live, script execution suspended')
-            print(f'[*] Press CTRL + C to kill server and exit')
+            dtale.show(master_eav, name='EAV Ledger', host='localhost', port=8000)
 
-            try:
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                print(f'\n[*] Keyboard interrupt detected. Terminating server')
-                exit(0)
+        # load the Audit df (data instance 2)
+        if not master_audit.empty:
+
+            dtale.show(master_audit, name='Audit Ledger', host='localhost', port=8000)
+
+        print(f'   [>] EAV Table loaded at: http:127.0.0.1:8000')
+        print(f'[+] Click the top left menu in Dtale and select instances to swap between EAV and Audit Ledgers')
+        print(f'\n[*] Server is live, script execution suspended')
+        print(f'[*] Press CTRL + C to kill server and exit')
+
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print(f'\n[*] Keyboard interrupt detected. Terminating server')
+            exit(0)
