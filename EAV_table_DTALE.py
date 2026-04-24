@@ -13,6 +13,8 @@ warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 # Define the global homogonization dict
 # Variants of headers to be cleaned before creating prospect_UUID hash
+# can move to json or xml or something later, dict is fine for now
+# adding new polymorphic discriminators just discovered, will double check for overlaps between Discriminator and Parent/Student Core 
 
 header_map = {
     'Email':'Core_Email',
@@ -34,6 +36,13 @@ header_map = {
     'Parent Email':'Core_Parent_Email',
     'Parent First Name':'Core_Parent_First_Name',
     'Parent Last Name':'Core_Parent_Last_Name',
+    'I am':'Role_Discriminator', #no Core_ prefix to allow EAV table to melt without loss
+    'I am a':'Role_Discriminator',
+    'I am a(n)':'Role_Discriminator',
+    'Parent or Student':'Role_Discriminator',
+    'Relationship to Student':'Role_Discriminator',
+    'Type of Inquiry':'Role_Discriminator'
+
 }
 
 # Generate the interaction and entity hashes
@@ -242,7 +251,7 @@ def build_eav_pipeline(directory_path):
             # --- HORIZONTAL COMPLETENESS (UNMAPPED TAGGING) --- 
 
             for col in df.columns:
-                if col in ['Source_File','Source_Sheet', 'Interaction_Hash']:
+                if col in ['Source_File','Source_Sheet', 'Interaction_Hash', 'raw_unmapped_baseline_interaction']:
                     new_columns.append(col)
                 elif col in header_map:
                     new_columns.append(header_map[col])
@@ -257,17 +266,92 @@ def build_eav_pipeline(directory_path):
             df.columns = new_columns
             df = df.groupby(df.columns, axis=1).first()
 
-            # Entity Resolution (Dual-Core Generation)
+            #-----------------------------------------------
+            #---1. HYGEINE LAYER ---
+            #--------------------------------------------------
+            for col in df.columns:
+                if pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(df[col]):
+                    mask = df[col].notna()
+                    df.loc[mask, col] = df.loc[mask, col].astype(str).str.strip() #strip spaces
+
+                    if 'email' in col.lower():
+                        df.loc[mask, col] = df.loc[mask, col].str.lower()
+                    elif 'name' in col.lower() and 'file' not in col.lower() and 'sheet' not in col.lower():
+                        df.loc[mask, col] = df.loc[mask, col].str.title()
+            
+            #standardize empty strings into pd NA
+            df = df.replace({'nan': pd.NA, 'None':pd.NA, '':pd.NA, '<NA>':pd.NA})
+
+            #------------------------------------------------------------------------------------------
+            # --- 2. POLYMORPHIC ROUTER (Triple Track | Student --> Parent --> Influencer) ---
+            # defaults to student entity type unless finds parent or other disciminators (teachers, agents, etc)
+
+            #check if the filename implies a parent file, or if the discriminator col triggered
+            is_parent_file = 'parent' in file_name.lower()
+            is_influencer_file = any(word in file_name.lower() for word in ['counsellor', 'teacher', 'agent', 'educator', 'guidance'])
+            
+            if 'Role_Discriminator' in df.columns or is_parent_file or is_influencer_file:
+                #defaults to the column if it exists, otherwise uses filename for clues
+                if 'Role_Discriminator' in df.columns:
+                    roles = df['Role_Discriminator'].astype(str).str.lower().str.strip()
+                elif is_parent_file:
+                    roles = pd.Series('parent', index = df.index) #sim column for parent files 
+                else:
+                    roles = pd.Series('counsellor', index=df.index)
+
+                
+                # defined taxonomies (can put into a side loader later)
+                parent_terms = ['parent','mother','father','guardian','mom','dad']
+                influencer_terms = ['counsellor', 'counselor', 'teacher', 'agent', 'educator', 'guidance', 'principal']
+
+                parent_mask = roles.str.contains('|'.join(parent_terms), na=False)
+                influencer_mask = roles.str.contains('|'.join(influencer_terms), na=False)
+
+                # --- DYNAMIC CORE FIELD DISCOVERY --- 
+                # THE SWEEP - finds ALL generic demographic columns, looks for CORE_ to grab them all and exclude any columns that already have a specific entity prefix
+                generic_core_columns = [c for c in df.columns if str(c).startswith('Core_') and 'parent' not in str(c).lower() and 'influencer' not in str(c).lower()]
+
+                # TRACK 1: ROUTE PARENTS
+                if parent_mask.any():
+                    for core_col in generic_core_columns:
+                        parent_col = core_col.replace('Core_', 'Core_Parent_') #dynamic creation of target col
+                        if parent_col not in df.columns: df[parent_col] = pd.NA
+
+                        shift_mask = parent_mask & df[parent_col].isna()
+
+                        df.loc[shift_mask, parent_col] = df.loc[shift_mask, core_col]
+                        df.loc[shift_mask, core_col] = pd.NA
+
+                # TRACK 2: ROUTE INFLUENCER
+                if influencer_mask.any():
+                    for core_col in generic_core_columns:
+                        inf_col = core_col.replace('Core_', 'Core_Influencer_') #dynamic creation of target col ie Core_Influencer_Email
+
+                        if inf_col not in df.columns: df[inf_col] = pd.NA
+
+                        shift_mask = influencer_mask & df[inf_col].isna()
+
+                        df.loc[shift_mask, inf_col] = df.loc[shift_mask, core_col]
+                        df.loc[shift_mask, core_col] = pd.NA
+
+            #---------------------------------------------------------------------
+            # 3. Entity Resolution (Tri-Core Generation)
+            #---------------------------------------------------------------------
             df['Student_UUID'] = df.apply(lambda row: generate_entity_uuid(
                 row, 'Core_Email', 'Core_First_Name', 'Core_Last_Name'), axis=1)
                
             df['Parent_UUID'] = df.apply(lambda row: generate_entity_uuid(
                 row, 'Core_Parent_Email', 'Core_Parent_First_Name', 'Core_Parent_Last_Name'), axis=1)
             
+            if 'Core_Influencer_Email' in df.columns or 'Core_Influencer_First_Name' in df.columns:
+                df['Influencer_UUID'] = df.apply(lambda row: generate_entity_uuid(
+                    row, 'Core_Influencer_Email', 'Core_Influencer_First_Name', 'Core_Influencer_Last_Name'), axis =1)
+            else: 
+                df['Influencer_UUID'] = None
+            
             # --- LOSSLESS ORPHAN CATCHER (zerodropna) --- 
             #if a row fails to generate any UUID, tag it unresolved and anchor it to its hash
-            df['Unresolved_UUID'] = df.apply(lambda row: row['Interaction_Hash'] if pd.isna(row['Student_UUID']) and pd.isna(row['Parent_UUID'])
-                                             else None, axis =1)
+            df['Unresolved_UUID'] = df.apply(lambda row: row['Interaction_Hash'] if pd.isna(row['Student_UUID']) and pd.isna(row['Parent_UUID']) and  pd.isna(row['Influencer_UUID']) else None, axis =1)
             
             count_unresolved = df['Unresolved_UUID'].notna().sum()
             count_unresolved_rows = pandas_parsed_rows - count_unresolved
@@ -276,7 +360,9 @@ def build_eav_pipeline(directory_path):
             #df = df.dropna(subset=['Student_UUID', 'Parent_UUID'], how='all')
             #retained_rows = len(df)
 
+            #---------------------------------------------------------------------
             # --- THE AUDIT --- (Calculated before the melt multiplies the rows)
+            #---------------------------------------------------------------------
 
             master_audit.append({
                 'Source_File': file_name,
@@ -293,164 +379,164 @@ def build_eav_pipeline(directory_path):
             
             print(f'  [+] Parsed {pandas_parsed_rows} rows: {count_unresolved_rows} Resolved Entities | {count_unresolved} Unresolved Ghosts')
             
-            # --- Extract the Relational Edges (The Graph Foundation) ---
-            # Find the rows where we successfully generated BOTH a student and a parent
-            mask_both = df['Student_UUID'].notna() & df['Parent_UUID'].notna()
-            if mask_both.any():
-                file_edges = df.loc[mask_both, ['Student_UUID', 'Parent_UUID', 'Source_File', 'Interaction_Hash']].copy()
-                file_edges['Relationship'] = 'HAS_PARENT'
-                master_edges.append(file_edges)
-                print(f'   [+] Extracted {len(file_edges)} HAS_PARENT edges')
-               
-           #  Attribute Triage (Who owns what?)
+            # ==========================================
+            # 4. NETWORK EDGE GENERATION
+            # ==========================================
+            for uuid_col, entity_type in [('Student_UUID', 'Student'), ('Parent_UUID', 'Parent'), ('Influencer_UUID', 'Influencer')]:
+                if uuid_col in df.columns:
+                    mask = df[uuid_col].notna()
+                    if mask.any():
+                        edges = df.loc[mask, [uuid_col, 'Source_File', 'Interaction_Hash']].copy()
+                        edges.rename(columns={uuid_col: 'Source', 'Source_File': 'Target'}, inplace=True)
+                        edges['Relationship'] = 'INTERACTED_WITH'
+                        edges['Entity_Type'] = entity_type
+                        master_edges.append(edges)
+
+            if 'Student_UUID' in df.columns and 'Parent_UUID' in df.columns:
+                mask_parent = df['Student_UUID'].notna() & df['Parent_UUID'].notna()
+                if mask_parent.any():
+                    sp_edges = df.loc[mask_parent, ['Student_UUID', 'Parent_UUID', 'Interaction_Hash', 'Source_File']].copy()
+                    sp_edges.rename(columns={'Student_UUID': 'Source', 'Parent_UUID': 'Target'}, inplace=True)
+                    sp_edges['Relationship'] = 'HAS_PARENT'
+                    sp_edges['Entity_Type'] = 'Social'
+                    master_edges.append(sp_edges)
+
+            if 'Student_UUID' in df.columns and 'Influencer_UUID' in df.columns:
+                mask_inf = df['Student_UUID'].notna() & df['Influencer_UUID'].notna()
+                if mask_inf.any():
+                    si_edges = df.loc[mask_inf, ['Student_UUID', 'Influencer_UUID', 'Interaction_Hash', 'Source_File']].copy()
+                    si_edges.rename(columns={'Student_UUID': 'Source', 'Influencer_UUID': 'Target'}, inplace=True)
+                    si_edges['Relationship'] = 'COUNSELLED_BY'
+                    si_edges['Entity_Type'] = 'Social'
+                    master_edges.append(si_edges)
+
+            # ==========================================
+            # 5. ATTRIBUTE TRIAGE
+            # ==========================================
             all_columns = df.columns.tolist()
-            core_system_cols = ['Student_UUID', 'Parent_UUID', 'Unresolved_UUID', 'Interaction_Hash', 'Source_File', 'Source_Sheet']
-            core_data_cols = [c for c in all_columns if c.startswith('Core_')]
+            core_system_cols = ['Student_UUID', 'Parent_UUID', 'Influencer_UUID', 'Unresolved_UUID', 'Interaction_Hash', 'Source_File', 'Source_Sheet']
+            core_data_cols = [c for c in all_columns if str(c).startswith('Core_')]
            
-            # --- THE HYBRID EAV FIX: Splitting the Core Data ---
-            # We route the un-meltable identity columns to the correct entity
-            parent_core_cols = [c for c in core_data_cols if 'parent' in c.lower() or 'guardian' in c.lower()]
-            student_core_cols = [c for c in core_data_cols if c not in parent_core_cols]
+            explicit_parent_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols and ('parent' in str(c).lower() or 'guardian' in str(c).lower())]
+            explicit_inf_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols and any(x in str(c).lower() for x in ['teacher', 'counsel', 'influencer', 'agent'])]
+            generic_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols and c not in explicit_parent_vars and c not in explicit_inf_vars]
 
-            # Check if this file is explicitly a Parent-only extraction type
-            #is_parent_file = 'parent' in file_name.lower()
+            parent_value_vars = explicit_parent_vars + generic_value_vars
+            influencer_value_vars = explicit_inf_vars + generic_value_vars
+            student_value_vars = generic_value_vars  
 
-            # If the file generated Parent UUIDs but zero Student UUIDs, it's a parent file.
-            is_parent_file = ('parent' in file_name.lower()) or (df['Student_UUID'].isna().all() and not df['Parent_UUID'].isna().all())
-           
             if is_parent_file:
-                #if it is a parent file, ALL non-core attributes belong to the parent
                 parent_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols]
-                student_value_vars = []
+                student_value_vars, influencer_value_vars = [], []
+            elif is_influencer_file:
+                influencer_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols]
+                student_value_vars, parent_value_vars = [], []
 
-            else: 
-                # Standard heuristic routing for the variable data (The columns that WILL melt)
-                parent_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols and ('parent' in c.lower() or 'guardian' in c.lower())]
-                student_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols and c not in parent_value_vars]
-           
-            # Melt the Student Attributes (Fat EAV)
+            global_attributes = ['Role_Discriminator', 'raw_unmapped_baseline_interaction']
+            for attr in global_attributes:
+                if attr in all_columns:
+                    for var_list in [parent_value_vars, influencer_value_vars, student_value_vars]:
+                        if attr not in var_list:
+                            var_list.append(attr)
+
+            # ==========================================
+            # 6. EAV MELTING 
+            # ==========================================
+            student_core_cols = [c for c in df.columns if str(c).startswith('Core_') and 'parent' not in str(c).lower() and 'influencer' not in str(c).lower()]
+            parent_core_cols = [c for c in df.columns if str(c).startswith('Core_Parent_')]
+            influencer_core_cols = [c for c in df.columns if str(c).startswith('Core_Influencer_')]
+
             student_df = df.dropna(subset=['Student_UUID'])
             if not student_df.empty and student_value_vars:
-                # Lock the student_core_cols into the bedrock alongside the UUID and dynamically include Source_Sheet if it exists
                 student_id_vars = [c for c in ['Student_UUID', 'Interaction_Hash', 'Source_File', 'Source_Sheet'] + student_core_cols if c in student_df.columns]
-               
-                student_eav = pd.melt(
-                    student_df,
-                    id_vars=student_id_vars,
-                    value_vars=student_value_vars,
-                    var_name='Attribute',
-                    value_name='Value'
-                )
+                student_eav = pd.melt(student_df, id_vars=student_id_vars, value_vars=student_value_vars, var_name='Attribute', value_name='Value')
                 student_eav = student_eav.rename(columns={'Student_UUID': 'Entity_UUID'})
                 student_eav['Entity_Type'] = 'Student'
                 master_eav_frames.append(student_eav)
                
-            # Melt the Parent Attributes (Fat EAV)
             parent_df = df.dropna(subset=['Parent_UUID'])
             if not parent_df.empty and parent_value_vars:
-                # Lock the parent_core_cols into the bedrock alongside the UUID
                 parent_id_vars = [c for c in ['Parent_UUID', 'Interaction_Hash', 'Source_File', 'Source_Sheet'] + parent_core_cols if c in parent_df.columns]
-               
-                parent_eav = pd.melt(
-                    parent_df,
-                    id_vars=parent_id_vars,
-                    value_vars=parent_value_vars,
-                    var_name='Attribute',
-                    value_name='Value'
-                )
+                parent_eav = pd.melt(parent_df, id_vars=parent_id_vars, value_vars=parent_value_vars, var_name='Attribute', value_name='Value')
                 parent_eav = parent_eav.rename(columns={'Parent_UUID': 'Entity_UUID'})
                 parent_eav['Entity_Type'] = 'Parent'
                 master_eav_frames.append(parent_eav)
 
-            # Melt Unresolved Attributes (The Ghost)
+            influencer_df = df.dropna(subset=['Influencer_UUID'])
+            if not influencer_df.empty and influencer_value_vars:
+                inf_id_vars = [c for c in ['Influencer_UUID', 'Interaction_Hash', 'Source_File', 'Source_Sheet'] + influencer_core_cols if c in influencer_df.columns]
+                inf_eav = pd.melt(influencer_df, id_vars=inf_id_vars, value_vars=influencer_value_vars, var_name='Attribute', value_name='Value')
+                inf_eav = inf_eav.rename(columns={'Influencer_UUID': 'Entity_UUID'})
+                inf_eav['Entity_Type'] = 'Influencer'
+                master_eav_frames.append(inf_eav)
+
             unresolved_df = df.dropna(subset=['Unresolved_UUID'])
             if not unresolved_df.empty:
-                #core demographics remain in ID bedrock so fragmented names without emails are not lost
-                unresolved_id_vars = [c for c in ['Unresolved_UUID', 'Interaction_Hash', 'Source_File', 'Source_Sheet'] + parent_core_cols if c in unresolved_df.columns]
+                unresolved_id_vars = [c for c in ['Unresolved_UUID', 'Interaction_Hash', 'Source_File', 'Source_Sheet'] + core_data_cols if c in unresolved_df.columns]
                 unresolved_value_vars = [c for c in all_columns if c not in core_system_cols and c not in core_data_cols]
-
-                unresolved_eav = pd.melt(
-                    unresolved_df, 
-                    id_vars = unresolved_id_vars, 
-                    value_vars = unresolved_value_vars,
-                    var_name='Attribute',
-                    value_name='Value'
-                )
+                unresolved_eav = pd.melt(unresolved_df, id_vars=unresolved_id_vars, value_vars=unresolved_value_vars, var_name='Attribute', value_name='Value')
                 unresolved_eav = unresolved_eav.rename(columns={'Unresolved_UUID': 'Entity_UUID'})
                 unresolved_eav['Entity_Type'] = 'Unresolved'
                 master_eav_frames.append(unresolved_eav)
 
-
         except Exception as e:
             import traceback
-            # Note: I cleaned up this print statement. file_name is already defined earlier in your loop.
             print(f"    [!] FATAL ERROR processing {file_name}: {e}")
             traceback.print_exc()
            
-    # Final Concatenation and Null Purge
     final_eav = pd.concat(master_eav_frames, ignore_index=True) if master_eav_frames else pd.DataFrame()
     final_edges = pd.concat(master_edges, ignore_index=True) if master_edges else pd.DataFrame()
-    final_audit = pd.DataFrame(master_audit) # create the ledger df
+    final_audit = pd.DataFrame(master_audit) 
    
     if not final_eav.empty:
-        # Purge the void and standardize
         final_eav = final_eav.dropna(subset=['Value'])
-        final_eav = final_eav[~final_eav['Value'].astype(str).str.strip().isin(['', 'nan', 'NaN', 'None'])]
-        #regex = False prevents compilation errors when stdizing the attributes
+        final_eav = final_eav[~final_eav['Value'].astype(str).str.strip().isin(['', 'nan', 'NaN', 'None', '<NA>'])]
         final_eav['Attribute'] = final_eav['Attribute'].astype(str).str.strip().str.lower().str.replace(' ', '_', regex=False)
        
     return final_eav, final_edges, final_audit
 
 if __name__ == '__main__':
-    # --- configure the cli parser
-    parser = argparse.ArgumentParser(description="Ingest, homogoenize, and prospect CSV schemas into an EAV database")
-    parser.add_argument(
-        '-d', '--dir',
-        type=str,
-        required=True,
-        help='Target directory path containing the raw files'
-
-    )
-
+    parser = argparse.ArgumentParser(description="Ingest prospect schemas into an EAV database")
+    parser.add_argument('-d', '--dir', type=str, required=True, help='Target directory path')
     args = parser.parse_args()
 
-    # -- trigger the pipeline 
-    
     if not os.path.isdir(args.dir):
         print(f'[!] FATAL: Directory {args.dir} does not exist.')
         exit(1)
 
-    #pipeline returns the 3 variables
     master_eav, master_edges, master_audit = build_eav_pipeline(args.dir)
 
-    #Save the audit for records
+    # --- SAVE AUDIT LEDGER ---
     if not master_audit.empty:
         audit_path = 'extraction_audit_ledger.csv'
         master_audit.to_csv(audit_path, index=False)
         print(f'\n[+] Audit Ledger saved permanently to: {audit_path}')
 
-    # DTale visualization & Server suspension
+    # --- SAVE THE SILVER LAYER (PARQUET HANDOFF) ---
+    os.makedirs('data/silver', exist_ok=True)
+    if not master_eav.empty:
+        master_eav.to_parquet('data/silver/silver_eav.parquet', index=False)
+        print('[+] Silver EAV exported to: data/silver/silver_eav.parquet')
+        
+    if not master_edges.empty:
+        master_edges.to_parquet('data/silver/silver_edges.parquet', index=False)
+        print('[+] Silver Edges exported to: data/silver/silver_edges.parquet')
 
+    # --- DTALE VISUALIZATION & SERVER SUSPENSION ---
     if not master_eav.empty or not master_edges.empty:
         print(f'\n[*] Initializing DTale diagnostic servers...')
-
-        # load the EAV df (data instance 1)
         if not master_eav.empty:
+            dtale.show(master_eav, name='EAV Ledger', host='127.0.0.1', port=8000)
+            
+        if not master_edges.empty:
+            # attaches as second instance
+            dtale.show(master_edges, name='Graph Edges', host='127.0.0.1', port=8000)
 
-            #getting a more definitive instantiation: space instead of underscore in name attr, forced IPv4, static port
+        print(f'   [>] D-Tale Hub loaded at: http://127.0.0.1:8000')
 
-            dtale.show(master_eav, name='EAV Ledger', host='localhost', port=8000)
-
-        # load the Audit df (data instance 2)
-        if not master_audit.empty:
-
-            dtale.show(master_audit, name='Audit Ledger', host='localhost', port=8000)
-
-        print(f'   [>] EAV Table loaded at: http:127.0.0.1:8000')
-        print(f'[+] Click the top left menu in Dtale and select instances to swap between EAV and Audit Ledgers')
         print(f'\n[*] Server is live, script execution suspended')
         print(f'[*] Press CTRL + C to kill server and exit')
-
+        
         try:
             while True:
                 time.sleep(1)
