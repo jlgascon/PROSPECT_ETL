@@ -55,43 +55,26 @@ def generate_entity_uuid(row, email_col, fname_col, lname_col):
     #f_name = str(row.get('first_name', '')).lower().strip()
     #l_name = str(row.get('last_name', '')).lower().strip()
     
-    #refactored to get entity rather than just student stuff (parent emails etc)
+    def clean(val):
+        #cast to str, lower, strip
+        s = str(row.get(val,'')).lower().strip()
+        #kill the pseduo-null junk strings from pd
+        if s in ['nan','none', 'null', '']:
+            return ''
+        return s
 
-    email = str(row.get(email_col, '')).lower().strip()
-    f_name = str(row.get(fname_col, '')).lower().strip()
-    l_name = str(row.get(lname_col, '')).lower().strip()
+    email = clean(email_col)
+    f_name = clean(fname_col)
+    l_name = clean(lname_col)
 
-    # handle 'nan' strings and empty values
-    email = '' if email == 'nan' else email
-    f_name = '' if f_name == 'nan' else f_name
-    l_name = '' if l_name == 'nan' else l_name
-
-    #ensure sufficient data to actually identify someone
+    #GUARD ensure sufficient data to actually identify someone, prevents '||' delimiter from being turned into UUID
     if not (email or (f_name and l_name)):
         return None
     
     # use a pipe-delimited compound string to prevent collisions
     # example 'john.doe@gmail.com|john|doe'
     # (Jo+Hndoe vs John+Doe)
-    raw_string = f'{email}|{f_name}|{l_name}'
-
-    #some aggrod regex to prevent hash collision from typos (trailing punctuation etc)
-    #email = re.sub(r'[^a-zA-Z0-9@.+_-]','', email)
-    #allowed_chars = set('abcdefghijklmnopqrstuvwxyz0123456789@.+_-') # regex was finding \x incomplete escapes and broke down
-    #email = ''.join(c for c in email if c in allowed_chars)
-
-    #core str concatenation
-    #prioritizing email, then falling back to first + last name if email is missing
-
-    #if email and email != 'nan':
-    #    raw_string = email
-    #elif f_name != 'nan' and l_name != 'nan' and f_name and l_name:
-    #    raw_string = f'{f_name}{l_name}'
-    #else:
-        #admin ghost, no usable entity data
-    #    return None
-    
-    #return hashlib.sha256(raw_string.encode('utf-8')).hexdigest()
+    raw_string = f"{email}|{f_name}|{l_name}"
 
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, raw_string))
 
