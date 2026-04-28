@@ -7,6 +7,7 @@ import argparse
 import dtale
 import time
 import warnings
+import uuid
 
 # suppress openpyxl data validation extension warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
@@ -60,24 +61,39 @@ def generate_entity_uuid(row, email_col, fname_col, lname_col):
     f_name = str(row.get(fname_col, '')).lower().strip()
     l_name = str(row.get(lname_col, '')).lower().strip()
 
+    # handle 'nan' strings and empty values
+    email = '' if email == 'nan' else email
+    f_name = '' if f_name == 'nan' else f_name
+    l_name = '' if l_name == 'nan' else l_name
+
+    #ensure sufficient data to actually identify someone
+    if not (email or (f_name and l_name)):
+        return None
+    
+    # use a pipe-delimited compound string to prevent collisions
+    # example 'john.doe@gmail.com|john|doe'
+    # (Jo+Hndoe vs John+Doe)
+    raw_string = f'{email}|{f_name}|{l_name}'
 
     #some aggrod regex to prevent hash collision from typos (trailing punctuation etc)
     #email = re.sub(r'[^a-zA-Z0-9@.+_-]','', email)
-    allowed_chars = set('abcdefghijklmnopqrstuvwxyz0123456789@.+_-') # regex was finding \x incomplete escapes and broke down
-    email = ''.join(c for c in email if c in allowed_chars)
+    #allowed_chars = set('abcdefghijklmnopqrstuvwxyz0123456789@.+_-') # regex was finding \x incomplete escapes and broke down
+    #email = ''.join(c for c in email if c in allowed_chars)
 
     #core str concatenation
     #prioritizing email, then falling back to first + last name if email is missing
 
-    if email and email != 'nan':
-        raw_string = email
-    elif f_name != 'nan' and l_name != 'nan' and f_name and l_name:
-        raw_string = f'{f_name}{l_name}'
-    else:
+    #if email and email != 'nan':
+    #    raw_string = email
+    #elif f_name != 'nan' and l_name != 'nan' and f_name and l_name:
+    #    raw_string = f'{f_name}{l_name}'
+    #else:
         #admin ghost, no usable entity data
-        return None
+    #    return None
     
-    return hashlib.sha256(raw_string.encode('utf-8')).hexdigest()
+    #return hashlib.sha256(raw_string.encode('utf-8')).hexdigest()
+
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, raw_string))
 
 def robust_ingest(file_path):
     """
